@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cache-eviction-lru-lfu"
+version = "0.1.0"
+description = "Five dependency-free cache eviction policies plus a reproducible benchmark that measures every one of them against the exact-optimal MIN baseline"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[tool.setuptools]
+packages = ["cachelib"]

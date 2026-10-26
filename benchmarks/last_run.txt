@@ -1,0 +1,185 @@
+cache-eviction-lru-lfu benchmarks - python 3.11.9
+This file measures hit rate, memory, update cost and correctness of
+five eviction policies against the exact-optimal MIN baseline.
+
+==============================================================================
+Section 1. Trace composition (deterministic)
+==============================================================================
+trace              ops   unique   p50gap   p95gap    gap>C
+uniform          30000     5969     3279    13526    0.974
+zipf-0.99        30000     4174      180     8885    0.551
+zipf-1.20        30000     2721       28     4763    0.325
+cyclic-scan      30000    25800       40      520    0.495
+time-shift       30000     3934       59     6028    0.269
+powerlaw         30000      954       18     1086    0.179
+
+Interpretation: at C=120 the row that hurts most is uniform: p95 reuse
+  distance 13526 and 0.974 of all reuses land beyond C, which is the part no
+  policy can buy back by growing the table to this size. powerlaw is the
+  opposite case, with only 0.179 of reuses beyond C.
+
+==============================================================================
+Section 2. Hit rate vs cache-size ratio (deterministic)
+==============================================================================
+trace zipf-0.99, keyspace 6000, ops 30000
+policy             C=30    C=120    C=300    C=600   C=1200
+fifo             0.2219   0.3821   0.4989   0.5974   0.6997
+lru              0.2621   0.4287   0.5467   0.6439   0.7386
+two_q            0.3723   0.5098   0.6086   0.6789   0.7481
+lfu              0.4041   0.5003   0.5768   0.6510   0.7386
+belady           0.4649   0.6189   0.7175   0.7830   0.8371
+
+trace cyclic-scan, keyspace 6000, ops 30000
+policy             C=30    C=120    C=300    C=600   C=1200
+fifo             0.0000   0.0707   0.0707   0.1053   0.1173
+lru              0.0000   0.0707   0.0707   0.1400   0.1400
+two_q            0.0000   0.1397   0.1400   0.1400   0.1400
+lfu              0.0000   0.1400   0.1400   0.1400   0.1400
+belady           0.1033   0.1400   0.1400   0.1400   0.1400
+
+C=300 -> 600 doubles LRU's table on zipf-0.99
+  LRU 0.5467 -> 0.6439 (+0.0972)   best policy switch: 0.6086 (+0.0619)
+
+Interpretation: zipf-0.99 at C=300: FIFO 0.4989, LRU 0.5467, two_q 0.6086, MIN
+  0.7175. Switching from LRU to two_q is worth +0.0619 hit rate at fixed
+  memory, while doubling LRU's capacity is worth +0.0972; capacity is the
+  cheaper lever at this size.
+C=300 -> 600 doubles LRU's table on cyclic-scan
+  LRU 0.0707 -> 0.1400 (+0.0693)   best policy switch: 0.1400 (+0.0693)
+
+Interpretation: cyclic-scan at C=300: FIFO 0.0707, LRU 0.0707, two_q 0.1400,
+  MIN 0.1400. Switching from LRU to two_q is worth +0.0693 hit rate at fixed
+  memory, while doubling LRU's capacity is worth +0.0693; policy is the
+  cheaper lever at this size.
+
+==============================================================================
+Section 3. Distance from exact-optimal MIN per workload (deterministic)
+==============================================================================
+trace            fifo     lru      2q     lfu     MIN  lr/MIN    clsd
+uniform        0.0207  0.0208  0.0184  0.0204  0.1812   0.115   0.001
+zipf-0.99      0.3821  0.4287  0.5098  0.5003  0.6189   0.693   0.539
+zipf-1.20      0.6442  0.6944  0.7418  0.7340  0.8091   0.858   0.592
+cyclic-scan    0.0707  0.0707  0.1397  0.1400  0.1400   0.505   1.000
+time-shift     0.6627  0.7804  0.7892  0.7816  0.8156   0.957   0.828
+powerlaw       0.8916  0.9053  0.8924  0.5360  0.9448   0.958   0.258
+
+MIN is unreachable at runtime; it is reported only to price the others.
+
+Interpretation: averaged over the 6 traces LRU sits at 0.681 of the achievable
+  hit rate at C=120. Its worst row is uniform at 0.115 of optimal (0.0208 vs
+  MIN 0.1812); the row where the best heuristic closes most of the FIFO-to-MIN
+  span is cyclic-scan (1.000 closed, LRU 0.0707, best 0.1400, MIN 0.1400), so
+  there the policy choice is nearly the whole story.
+
+==============================================================================
+Section 4. Memory per entry per policy (deterministic)
+==============================================================================
+every table is sized at capacity 4096 and then loaded with the 30000-entry
+zipf-0.99 trace, so the hash map and any per-policy buckets are grown
+policy     struct B    B/slot   rows
+fifo         344488     84.10      7
+         extras: -
+lru          344488     84.10      7
+         extras: -
+two_q        415808    101.52     10
+         extras: two_q.where, two_q.ghosts, two_q.ghost_set
+lfu          412264    100.65     29
+         extras: lfu.freq, lfu.last, lfu.buckets, lfu.heap, lfu.bucket#2,
+         extras: lfu.bucket#0, lfu.bucket#22,
+         extras: lfu.bucket#119, lfu.bucket#6,
+         extras: lfu.bucket#53, lfu.bucket#4,
+         extras: lfu.bucket#10, lfu.bucket#1,
+         extras: lfu.bucket#12, lfu.bucket#5,
+         extras: lfu.bucket#32, lfu.bucket#7,
+         extras: lfu.bucket#13, lfu.bucket#3,
+         extras: lfu.bucket#11, lfu.bucket#16,
+         extras: lfu.bucket#8
+belady       738520    180.30      9
+         extras: belady.due, belady.stamp, belady.heap, belady.positions
+
+Interpretation: bytes per slot with the table full: FIFO 84.10, LRU 84.10
+  (1.00x), 2Q 101.52 (1.21x), LFU 100.65 (1.20x), MIN 180.30 (2.14x). 2Q's
+  excess is the segment bytearray plus 3 ghost containers; LFU's is the
+  frequency array, the recency array and 18 live frequency buckets on top of
+  the shared 7 store arrays. MIN is 2.14x because it keeps an index over the
+  30000-entry trace it was handed, which no online policy has to carry.
+
+==============================================================================
+Section 5. Scan pollution: 2Q-lite vs LRU on a cyclic scan (deterministic)
+==============================================================================
+hot set 40 keys, cache C=240, probation budget 60, main budget 180
+scan/C        ops      LRU       2Q      LFU      MIN    2Q-LRU   2Q/MIN
+0.25        30000   0.5693   0.5693   0.5693   0.5693   +0.0000    1.000
+0.50        30000   0.3987   0.3987   0.3987   0.3987   +0.0000    1.000
+1.00        30000   0.1240   0.2467   0.2467   0.2467   +0.1227    1.000
+2.00        30000   0.0707   0.1400   0.1400   0.1400   +0.0693    1.000
+4.00        30000   0.0373   0.0733   0.0441   0.0733   +0.0360    1.000
+
+rows where 2Q is behind LRU: 0 of 5; identical: 2
+
+Interpretation: at its widest row, scan/C=1.00 with scan=240 keys per cycle,
+  LRU is at 0.1240 and 2Q-lite at 0.2467, i.e. +0.1227 hit rate for the same
+  240 slots, and 1.000 of MIN's 0.2467. 2Q-lite never falls below LRU on this
+  family: at the smallest row (scan/C=0.25) LRU 0.5693, 2Q 0.5693 and MIN
+  0.5693 coincide, so that row prices no policy choice at all.
+
+==============================================================================
+Section 6. LFU aging knob sweep (deterministic)
+==============================================================================
+trace time-shift, ops 30000, C=120; cells are hit rate
+decay        I=1000    I=10000   I=100000 sweeps@I1
+1.00         0.3161     0.3161     0.3161        0
+0.90         0.3768     0.3166     0.3161       30
+0.70         0.7422     0.3166     0.3161       30
+0.50         0.7816     0.3166     0.3161       30
+0.20         0.7867     0.3397     0.3161       30
+0.00         0.7883     0.7195     0.3161       30
+LRU on the same trace: 0.7804    MIN: 0.8156
+decay=1.00 is flat across intervals (0.3161, 0.3161, 0.3161), sweeps=0:
+with no decay the sweep is skipped: that row has no knob left
+
+Interpretation: the knob alone moves LFU by 0.4721 hit rate: best is decay
+  0.00 at interval 1000 (0.7883, 30 sweeps), worst is decay 1.00 at interval
+  1000 (0.3161, 0 sweeps, 3 interval cells tie at that rate). Against LRU at
+  0.7804 the best setting gains +0.0078 and the worst loses -0.4643, and MIN
+  sits at 0.8156, so "LFU" here is a family whose endpoints differ more than
+  the distance from LRU to its own best alternative. The flat row is the
+  reason: leaving aging off entirely sits 0.4643 below LRU on this trace.
+
+==============================================================================
+Section 7. Update cost per operation (timing)
+==============================================================================
+ops 20000, C=400, 2 warm-ups discarded then best-of-5.
+Construction, including MIN's trace index, is outside the timed region.
+policy    best us/op  last us/op   spread us    vs FIFO
+fifo          1.1173      1.1897      0.0724       1.00
+lru           1.3370      1.4858      0.1488       1.20
+two_q         1.7887      1.8382      0.0494       1.60
+lfu           2.3809      2.5533      0.1724       2.13
+belady        1.9059      2.2013      0.2954       1.71
+noise floor (largest pass-to-pass spread of an identical batch): 0.2954 us/op
+anything inside that is a tie; this machine is running other jobs.
+
+Interpretation: best-of-5 per operation: lfu 2.3809 us/op, fifo 1.1173 us/op,
+  ratio 2.13. 3 of the 4 non-FIFO policies separate from FIFO by more than the
+  0.2954 us/op floor, and 2 of the 10 policy pairs are inside the floor and
+  therefore ties. LFU's extra 1.2635 us/op over FIFO is the cost of the bucket
+  bookkeeping, not of a different asymptotic class.
+
+==============================================================================
+Section 8. Correctness vs naive reference (deterministic)
+==============================================================================
+policy    over-cap  resurrect  hit-diff  set-diff     steps
+fifo             0          0         0         0     21600
+lru              0          0         0         0     21600
+two_q            0          0         0         0     21600
+lfu              0          0         0         0     21600
+belady           0          0         0         0     21600
+
+Interpretation: 108000 (trace, capacity) steps over 6 traces at capacities (1,
+  30, 128), each policy watched against its own naive dict/list
+  reimplementation: 0 capacity violations, 0 returns of an already-evicted
+  key, 0 hit-count disagreements, 0 resident-set mismatches, 0 defects in
+  total. MIN is included in that count, which is what makes it the calibration
+  row: a bug in MIN would show up as a hit rate above the optimum, not as a
+  crash.
